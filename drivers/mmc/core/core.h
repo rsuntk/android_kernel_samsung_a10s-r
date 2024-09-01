@@ -14,11 +14,19 @@
 #include <linux/delay.h>
 #include <linux/sched.h>
 
+#include "mmc_crypto.h"
+
 struct mmc_host;
 struct mmc_card;
 struct mmc_request;
 
 #define MMC_CMD_RETRIES        3
+
+#ifdef CONFIG_MMC_SUPPORT_STLOG
+#include <linux/fslog.h>
+#else
+#define ST_LOG(fmt, ...)
+#endif
 
 struct mmc_bus_ops {
 	void (*remove)(struct mmc_host *);
@@ -32,7 +40,6 @@ struct mmc_bus_ops {
 	int (*shutdown)(struct mmc_host *);
 	int (*hw_reset)(struct mmc_host *);
 	int (*sw_reset)(struct mmc_host *);
-	bool (*cache_enabled)(struct mmc_host *);
 };
 
 void mmc_attach_bus(struct mmc_host *host, const struct mmc_bus_ops *ops);
@@ -89,6 +96,17 @@ void mmc_remove_host_debugfs(struct mmc_host *host);
 
 void mmc_add_card_debugfs(struct mmc_card *card);
 void mmc_remove_card_debugfs(struct mmc_card *card);
+
+#ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
+void mmc_wait_cmdq_empty(struct mmc_host *host);
+void mmc_do_check(struct mmc_host *host);
+void mmc_do_stop(struct mmc_host *host);
+void mmc_do_status(struct mmc_host *host);
+void mmc_wait_cmdq_done(struct mmc_request *mrq);
+int mmc_run_queue_thread(void *data);
+#endif
+
+
 
 int mmc_execute_tuning(struct mmc_card *card);
 int mmc_hs200_to_hs400(struct mmc_card *card);
@@ -172,14 +190,6 @@ static inline void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq,
 {
 	if (host->ops->post_req)
 		host->ops->post_req(host, mrq, err);
-}
-
-static inline bool mmc_cache_enabled(struct mmc_host *host)
-{
-	if (host->bus_ops->cache_enabled)
-		return host->bus_ops->cache_enabled(host);
-
-	return false;
 }
 
 #endif

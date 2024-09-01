@@ -463,12 +463,11 @@ static int tm6000_alloc_urb_buffers(struct tm6000_core *dev)
 	if (dev->urb_buffer)
 		return 0;
 
-	dev->urb_buffer = kmalloc_array(num_bufs, sizeof(*dev->urb_buffer),
-					GFP_KERNEL);
+	dev->urb_buffer = kmalloc_array(num_bufs, sizeof(void *), GFP_KERNEL);
 	if (!dev->urb_buffer)
 		return -ENOMEM;
 
-	dev->urb_dma = kmalloc_array(num_bufs, sizeof(*dev->urb_dma),
+	dev->urb_dma = kmalloc_array(num_bufs, sizeof(dma_addr_t *),
 				     GFP_KERNEL);
 	if (!dev->urb_dma)
 		return -ENOMEM;
@@ -1626,7 +1625,7 @@ int tm6000_v4l2_register(struct tm6000_core *dev)
 	v4l2_ctrl_new_std(&dev->ctrl_handler, &tm6000_ctrl_ops,
 			V4L2_CID_HUE, -128, 127, 1, 0);
 	v4l2_ctrl_add_handler(&dev->ctrl_handler,
-			&dev->radio_ctrl_handler, NULL);
+			&dev->radio_ctrl_handler, NULL, false);
 
 	if (dev->radio_ctrl_handler.error)
 		ret = dev->radio_ctrl_handler.error;

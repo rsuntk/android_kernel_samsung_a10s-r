@@ -301,9 +301,7 @@ static void __gtp_encap_destroy(struct sock *sk)
 			gtp->sk1u = NULL;
 		udp_sk(sk)->encap_type = 0;
 		rcu_assign_sk_user_data(sk, NULL);
-		release_sock(sk);
 		sock_put(sk);
-		return;
 	}
 	release_sock(sk);
 }
@@ -548,12 +546,12 @@ static int gtp_build_skb_ip4(struct sk_buff *skb, struct net_device *dev,
 
 	rt->dst.ops->update_pmtu(&rt->dst, NULL, skb, mtu, false);
 
-	if (iph->frag_off & htons(IP_DF) &&
-	    ((!skb_is_gso(skb) && skb->len > mtu) ||
-	     (skb_is_gso(skb) && !skb_gso_validate_network_len(skb, mtu)))) {
+	if (!skb_is_gso(skb) && (iph->frag_off & htons(IP_DF)) &&
+	    mtu < ntohs(iph->tot_len)) {
 		netdev_dbg(dev, "packet too big, fragmentation needed\n");
-		icmp_ndo_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
-			      htonl(mtu));
+		memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
+		icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED,
+			  htonl(mtu));
 		goto err_rt;
 	}
 
@@ -669,6 +667,10 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 
 	gtp = netdev_priv(dev);
 
+	err = gtp_encap_enable(gtp, data);
+	if (err < 0)
+		return err;
+
 	if (!data[IFLA_GTP_PDP_HASHSIZE]) {
 		hashsize = 1024;
 	} else {
@@ -679,16 +681,12 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 
 	err = gtp_hashtable_new(gtp, hashsize);
 	if (err < 0)
-		return err;
-
-	err = gtp_encap_enable(gtp, data);
-	if (err < 0)
-		goto out_hashtable;
+		goto out_encap;
 
 	err = register_netdevice(dev);
 	if (err < 0) {
 		netdev_dbg(dev, "failed to register new netdev %d\n", err);
-		goto out_encap;
+		goto out_hashtable;
 	}
 
 	gn = net_generic(dev_net(dev), gtp_net_id);
@@ -699,23 +697,22 @@ static int gtp_newlink(struct net *src_net, struct net_device *dev,
 
 	return 0;
 
-out_encap:
-	gtp_encap_disable(gtp);
 out_hashtable:
 	kfree(gtp->addr_hash);
 	kfree(gtp->tid_hash);
+out_encap:
+	gtp_encap_disable(gtp);
 	return err;
 }
 
 static void gtp_dellink(struct net_device *dev, struct list_head *head)
 {
 	struct gtp_dev *gtp = netdev_priv(dev);
-	struct hlist_node *next;
 	struct pdp_ctx *pctx;
 	int i;
 
 	for (i = 0; i < gtp->hash_size; i++)
-		hlist_for_each_entry_safe(pctx, next, &gtp->tid_hash[i], hlist_tid)
+		hlist_for_each_entry_rcu(pctx, &gtp->tid_hash[i], hlist_tid)
 			pdp_context_delete(pctx);
 
 	gtp_encap_disable(gtp);
@@ -1382,26 +1379,26 @@ static int __init gtp_init(void)
 
 	get_random_bytes(&gtp_h_initval, sizeof(gtp_h_initval));
 
-	err = register_pernet_subsys(&gtp_net_ops);
-	if (err < 0)
-		goto error_out;
-
 	err = rtnl_link_register(&gtp_link_ops);
 	if (err < 0)
-		goto unreg_pernet_subsys;
+		goto error_out;
 
 	err = genl_register_family(&gtp_genl_family);
 	if (err < 0)
 		goto unreg_rtnl_link;
 
+	err = register_pernet_subsys(&gtp_net_ops);
+	if (err < 0)
+		goto unreg_genl_family;
+
 	pr_info("GTP module loaded (pdp ctx size %zd bytes)\n",
 		sizeof(struct pdp_ctx));
 	return 0;
 
+unreg_genl_family:
+	genl_unregister_family(&gtp_genl_family);
 unreg_rtnl_link:
 	rtnl_link_unregister(&gtp_link_ops);
-unreg_pernet_subsys:
-	unregister_pernet_subsys(&gtp_net_ops);
 error_out:
 	pr_err("error loading GTP module loaded\n");
 	return err;

@@ -383,7 +383,8 @@ static int vaddr_get_pfn(struct mm_struct *mm, unsigned long vaddr,
 
 	down_read(&mm->mmap_sem);
 	if (mm == current->mm) {
-		ret = get_user_pages_longterm(vaddr, 1, flags, page, vmas);
+		ret = get_user_pages(vaddr, 1, flags | FOLL_LONGTERM, page,
+				     vmas);
 	} else {
 		ret = get_user_pages_remote(NULL, mm, vaddr, 1, flags, page,
 					    vmas, NULL);
@@ -407,7 +408,6 @@ static int vaddr_get_pfn(struct mm_struct *mm, unsigned long vaddr,
 	}
 
 	down_read(&mm->mmap_sem);
-
 	vaddr = untagged_addr(vaddr);
 
 retry:
@@ -638,8 +638,7 @@ static int vfio_iommu_type1_pin_pages(void *iommu_data,
 
 		ret = vfio_add_to_pfn_list(dma, iova, phys_pfn[i]);
 		if (ret) {
-			if (put_pfn(phys_pfn[i], dma->prot) && do_accounting)
-				vfio_lock_acct(dma, -1, true);
+			vfio_unpin_page_external(dma, iova, do_accounting);
 			goto pin_unwind;
 		}
 	}

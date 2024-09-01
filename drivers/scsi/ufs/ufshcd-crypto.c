@@ -159,7 +159,7 @@ out:
 
 static void ufshcd_clear_keyslot(struct ufs_hba *hba, int slot)
 {
-	union ufs_crypto_cfg_entry cfg = {};
+	union ufs_crypto_cfg_entry cfg = { 0 };
 	int err;
 
 	err = ufshcd_program_key(hba, &cfg, slot);
@@ -398,7 +398,11 @@ int ufshcd_prepare_lrbp_crypto_spec(struct ufs_hba *hba,
 
 	lrbp->crypto_enable = true;
 	lrbp->crypto_key_slot = bc->bc_keyslot;
-	lrbp->data_unit_num = bc->bc_dun[0];
+
+	if (bc->hie_ext4 == true)
+		lrbp->data_unit_num = blk_rq_pos(cmd->request) >> 3;
+	else
+		lrbp->data_unit_num = bc->bc_dun[0];
 
 	return 0;
 }

@@ -202,12 +202,6 @@ static irqreturn_t generic_interrupt(int irq, void *__hci)
 	musb->int_rx = musb_clearw(musb->mregs, MUSB_INTRRX);
 	musb->int_tx = musb_clearw(musb->mregs, MUSB_INTRTX);
 
-	if ((musb->int_usb & MUSB_INTR_RESET) && !is_host_active(musb)) {
-		/* ep0 FADDR must be 0 when (re)entering peripheral mode */
-		musb_ep_select(musb->mregs, 0);
-		musb_writeb(musb->mregs, MUSB_FADDR, 0);
-	}
-
 	if (musb->int_usb || musb->int_tx || musb->int_rx)
 		retval = musb_interrupt(musb);
 
@@ -341,8 +335,7 @@ static int mtk_musb_init(struct musb *musb)
 err_phy_power_on:
 	phy_exit(glue->phy);
 err_phy_init:
-	if (musb->port_mode == MUSB_OTG)
-		mtk_otg_switch_exit(glue);
+	mtk_otg_switch_exit(glue);
 	return ret;
 }
 
@@ -514,8 +507,8 @@ static int mtk_musb_probe(struct platform_device *pdev)
 
 	glue->xceiv = devm_usb_get_phy(dev, USB_PHY_TYPE_USB2);
 	if (IS_ERR(glue->xceiv)) {
-		ret = PTR_ERR(glue->xceiv);
 		dev_err(dev, "fail to getting usb-phy %d\n", ret);
+		ret = PTR_ERR(glue->xceiv);
 		goto err_unregister_usb_phy;
 	}
 

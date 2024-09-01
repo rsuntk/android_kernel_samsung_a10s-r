@@ -26,6 +26,7 @@
 #include <linux/mmc/card.h>
 
 #include "cqhci.h"
+#include "cqhci-crypto.h"
 
 #define DCMD_SLOT 31
 #define NUM_SLOTS 32
@@ -266,6 +267,9 @@ static void __cqhci_enable(struct cqhci_host *cq_host)
 	if (cq_host->caps & CQHCI_TASK_DESC_SZ_128)
 		cqcfg |= CQHCI_TASK_DESC_SZ;
 
+	if (cqhci_crypto_enable(cq_host))
+		cqcfg |= CQHCI_CRYPTO_ENABLE;
+
 	cqhci_writel(cq_host, cqcfg, CQHCI_CFG);
 
 	cqhci_writel(cq_host, lower_32_bits(cq_host->desc_dma_base),
@@ -280,9 +284,6 @@ static void __cqhci_enable(struct cqhci_host *cq_host)
 	cqcfg |= CQHCI_ENABLE;
 
 	cqhci_writel(cq_host, cqcfg, CQHCI_CFG);
-
-	if (cqhci_readl(cq_host, CQHCI_CTL) & CQHCI_HALT)
-		cqhci_writel(cq_host, 0, CQHCI_CTL);
 
 	mmc->cqe_on = true;
 
@@ -380,6 +381,16 @@ static void cqhci_off(struct mmc_host *mmc)
 		pr_err("%s: cqhci: CQE stuck on\n", mmc_hostname(mmc));
 	else
 		pr_debug("%s: cqhci: CQE off\n", mmc_hostname(mmc));
+
+	/*
+	 * MTK PATCH: need disable cqhci for legacy cmds coz legacy cmds using
+	 * GPD DMA and it can only work when CQHCI disable.
+	 */
+	if (cq_host->quirks & CQHCI_QUIRK_DIS_BEFORE_NON_CQ_CMD) {
+		reg = cqhci_readl(cq_host, CQHCI_CFG);
+		reg &= ~CQHCI_ENABLE;
+		cqhci_writel(cq_host, reg, CQHCI_CFG);
+	}
 
 	mmc->cqe_on = false;
 }
@@ -568,10 +579,11 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	int err = 0;
 	u64 data = 0;
-	u64 *task_desc = NULL;
+	__le64 *task_desc = NULL;
 	int tag = cqhci_tag(mrq);
 	struct cqhci_host *cq_host = mmc->cqe_private;
 	unsigned long flags;
+	u32 reg;
 
 	if (!cq_host->enabled) {
 		pr_err("%s: cqhci: not enabled\n", mmc_hostname(mmc));
@@ -583,6 +595,13 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		__cqhci_enable(cq_host);
 
 	if (!mmc->cqe_on) {
+		/* MTK PATCH: need enable cqhci after issue legacy cmds */
+		if (cq_host->quirks & CQHCI_QUIRK_DIS_BEFORE_NON_CQ_CMD) {
+			reg = cqhci_readl(cq_host, CQHCI_CFG);
+			reg |= CQHCI_ENABLE;
+			cqhci_writel(cq_host, reg, CQHCI_CFG);
+		}
+
 		cqhci_writel(cq_host, 0, CQHCI_CTL);
 		mmc->cqe_on = true;
 		pr_debug("%s: cqhci: CQE on\n", mmc_hostname(mmc));
@@ -598,6 +617,12 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		task_desc = (__le64 __force *)get_desc(cq_host, tag);
 		cqhci_prep_task_desc(mrq, &data, 1);
 		*task_desc = cpu_to_le64(data);
+		err = cqhci_prep_crypto_desc(mrq, task_desc);
+		if (err) {
+			pr_debug("%s: cqhci: failed to setup crypto desc for tag %d\n",
+			       mmc_hostname(mmc), tag);
+			return err;
+		}
 		err = cqhci_prep_tran_desc(mrq, cq_host, tag);
 		if (err) {
 			pr_err("%s: cqhci: failed to setup tx desc: %d\n",
@@ -884,8 +909,8 @@ static bool cqhci_clear_all_tasks(struct mmc_host *mmc, unsigned int timeout)
 	ret = cqhci_tasks_cleared(cq_host);
 
 	if (!ret)
-		pr_warn("%s: cqhci: Failed to clear tasks\n",
-			mmc_hostname(mmc));
+		pr_debug("%s: cqhci: Failed to clear tasks\n",
+			 mmc_hostname(mmc));
 
 	return ret;
 }
@@ -918,7 +943,7 @@ static bool cqhci_halt(struct mmc_host *mmc, unsigned int timeout)
 	ret = cqhci_halted(cq_host);
 
 	if (!ret)
-		pr_warn("%s: cqhci: Failed to halt\n", mmc_hostname(mmc));
+		pr_debug("%s: cqhci: Failed to halt\n", mmc_hostname(mmc));
 
 	return ret;
 }
@@ -926,10 +951,10 @@ static bool cqhci_halt(struct mmc_host *mmc, unsigned int timeout)
 /*
  * After halting we expect to be able to use the command line. We interpret the
  * failure to halt to mean the data lines might still be in use (and the upper
- * layers will need to send a STOP command), however failing to halt complicates
- * the recovery, so set a timeout that would reasonably allow I/O to complete.
+ * layers will need to send a STOP command), so we set the timeout based on a
+ * generous command timeout.
  */
-#define CQHCI_START_HALT_TIMEOUT	500
+#define CQHCI_START_HALT_TIMEOUT	5
 
 static void cqhci_recovery_start(struct mmc_host *mmc)
 {
@@ -1017,28 +1042,28 @@ static void cqhci_recovery_finish(struct mmc_host *mmc)
 
 	ok = cqhci_halt(mmc, CQHCI_FINISH_HALT_TIMEOUT);
 
+	if (!cqhci_clear_all_tasks(mmc, CQHCI_CLEAR_TIMEOUT))
+		ok = false;
+
 	/*
 	 * The specification contradicts itself, by saying that tasks cannot be
 	 * cleared if CQHCI does not halt, but if CQHCI does not halt, it should
 	 * be disabled/re-enabled, but not to disable before clearing tasks.
 	 * Have a go anyway.
 	 */
-	if (!cqhci_clear_all_tasks(mmc, CQHCI_CLEAR_TIMEOUT))
-		ok = false;
-
-	/* Disable to make sure tasks really are cleared */
-	cqcfg = cqhci_readl(cq_host, CQHCI_CFG);
-	cqcfg &= ~CQHCI_ENABLE;
-	cqhci_writel(cq_host, cqcfg, CQHCI_CFG);
-
-	cqcfg = cqhci_readl(cq_host, CQHCI_CFG);
-	cqcfg |= CQHCI_ENABLE;
-	cqhci_writel(cq_host, cqcfg, CQHCI_CFG);
-
-	cqhci_halt(mmc, CQHCI_FINISH_HALT_TIMEOUT);
-
-	if (!ok)
-		cqhci_clear_all_tasks(mmc, CQHCI_CLEAR_TIMEOUT);
+	if (!ok) {
+		pr_debug("%s: cqhci: disable / re-enable\n", mmc_hostname(mmc));
+		cqcfg = cqhci_readl(cq_host, CQHCI_CFG);
+		cqcfg &= ~CQHCI_ENABLE;
+		cqhci_writel(cq_host, cqcfg, CQHCI_CFG);
+		cqcfg |= CQHCI_ENABLE;
+		cqhci_writel(cq_host, cqcfg, CQHCI_CFG);
+		/* Be sure that there are no tasks */
+		ok = cqhci_halt(mmc, CQHCI_FINISH_HALT_TIMEOUT);
+		if (!cqhci_clear_all_tasks(mmc, CQHCI_CLEAR_TIMEOUT))
+			ok = false;
+		WARN_ON(!ok);
+	}
 
 	cqhci_recover_mrqs(cq_host);
 
@@ -1056,6 +1081,8 @@ static void cqhci_recovery_finish(struct mmc_host *mmc)
 	cqhci_writel(cq_host, CQHCI_IS_HAC | CQHCI_IS_TCL, CQHCI_IS);
 
 	cqhci_set_irqs(cq_host, CQHCI_IS_MASK);
+
+	cqhci_crypto_recovery_finish(cq_host);
 
 	pr_debug("%s: cqhci: recovery done\n", mmc_hostname(mmc));
 }
@@ -1135,6 +1162,12 @@ int cqhci_init(struct cqhci_host *cq_host, struct mmc_host *mmc,
 				     sizeof(*cq_host->slot), GFP_KERNEL);
 	if (!cq_host->slot) {
 		err = -ENOMEM;
+		goto out_err;
+	}
+	err = cqhci_host_init_crypto(cq_host);
+	if (err) {
+		dev_info(mmc->parent, "CQHCI crypto initialization failed\n");
+		err = -EINVAL;
 		goto out_err;
 	}
 

@@ -69,12 +69,13 @@ void mmc_retune_enable(struct mmc_host *host)
 
 /*
  * Pause re-tuning for a small set of operations.  The pause begins after the
- * next command.
+ * next command and after first doing re-tuning.
  */
 void mmc_retune_pause(struct mmc_host *host)
 {
 	if (!host->retune_paused) {
 		host->retune_paused = 1;
+		mmc_retune_needed(host);
 		mmc_retune_hold(host);
 	}
 }
@@ -360,6 +361,10 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	int err;
 	struct mmc_host *host;
 
+#ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
+	int i;
+#endif
+
 	host = kzalloc(sizeof(struct mmc_host) + extra, GFP_KERNEL);
 	if (!host)
 		return NULL;
@@ -390,6 +395,12 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 
 	spin_lock_init(&host->lock);
 	init_waitqueue_head(&host->wq);
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
+	host->wlock_name = kasprintf(GFP_KERNEL,
+		"%s_detect", mmc_hostname(host));
+	host->detect_wake_lock =
+		wakeup_source_register(NULL, host->wlock_name);
+#endif
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 	INIT_DELAYED_WORK(&host->sdio_irq_work, sdio_irq_work);
 	timer_setup(&host->retune_timer, mmc_retune_timer, 0);
@@ -408,20 +419,28 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	host->fixed_drv_type = -EINVAL;
 	host->ios.power_delay_ms = 10;
 
+#ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
+	if (host->index == 0) {
+		for (i = 0; i < EMMC_MAX_QUEUE_DEPTH; i++)
+			host->areq_que[i] = NULL;
+
+		atomic_set(&host->areq_cnt, 0);
+		host->areq_cur = NULL;
+		host->done_mrq = NULL;
+		INIT_LIST_HEAD(&host->cmd_que);
+		INIT_LIST_HEAD(&host->dat_que);
+		spin_lock_init(&host->cmd_que_lock);
+		spin_lock_init(&host->dat_que_lock);
+		spin_lock_init(&host->que_lock);
+		init_waitqueue_head(&host->cmp_que);
+		init_waitqueue_head(&host->cmdq_que);
+	}
+#endif
+
 	return host;
 }
 
 EXPORT_SYMBOL(mmc_alloc_host);
-
-static int mmc_validate_host_caps(struct mmc_host *host)
-{
-	if (host->caps & MMC_CAP_SDIO_IRQ && !host->ops->enable_sdio_irq) {
-		dev_warn(host->parent, "missing ->enable_sdio_irq() ops\n");
-		return -EINVAL;
-	}
-
-	return 0;
-}
 
 /**
  *	mmc_add_host - initialise host hardware
@@ -435,9 +454,8 @@ int mmc_add_host(struct mmc_host *host)
 {
 	int err;
 
-	err = mmc_validate_host_caps(host);
-	if (err)
-		return err;
+	WARN_ON((host->caps & MMC_CAP_SDIO_IRQ) &&
+		!host->ops->enable_sdio_irq);
 
 	err = device_add(&host->class_dev);
 	if (err)
@@ -491,9 +509,11 @@ EXPORT_SYMBOL(mmc_remove_host);
  */
 void mmc_free_host(struct mmc_host *host)
 {
-	cancel_delayed_work_sync(&host->detect);
 	mmc_crypto_free_host(host);
 	mmc_pwrseq_free(host);
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
+	wakeup_source_unregister(host->detect_wake_lock);
+#endif
 	put_device(&host->class_dev);
 }
 
