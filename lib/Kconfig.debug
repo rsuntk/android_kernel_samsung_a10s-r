@@ -17,10 +17,19 @@ config PRINTK_TIME
 	  The behavior is also controlled by the kernel command line
 	  parameter printk.time=1. See Documentation/admin-guide/kernel-parameters.rst
 
+config PRINTK_PREFIX_ENHANCE
+	bool "Prefix cpu_id/status/pid/process_name to each kernel log"
+	depends on PRINTK
+	help
+	  PRINTK_PREFIX_ENHANCE which is used to control whether to show
+	  other information about this log. The information include
+	  which cpu about this process in, whether in isr, pid and thread
+	  name. These information can help to analyze issue.
+
 config CONSOLE_LOGLEVEL_DEFAULT
 	int "Default console loglevel (1-15)"
 	range 1 15
-	default "7"
+	default "1"
 	help
 	  Default loglevel to determine what will be printed on the console.
 
@@ -224,10 +233,8 @@ config FRAME_WARN
 	int "Warn for stack frames larger than (needs gcc 4.4)"
 	range 0 8192
 	default 2048 if GCC_PLUGIN_LATENT_ENTROPY
-	default 2048 if PARISC
-	default 1536 if (!64BIT && XTENSA)
-	default 1280 if KASAN && !64BIT
-	default 1024 if !64BIT
+	default 1280 if (!64BIT && PARISC)
+	default 1024 if (!64BIT && !PARISC)
 	default 2048 if 64BIT
 	help
 	  Tell gcc to warn at build time for stack frames larger than this.
@@ -855,6 +862,7 @@ config HARDLOCKUP_DETECTOR
 	depends on HAVE_HARDLOCKUP_DETECTOR_PERF || HAVE_HARDLOCKUP_DETECTOR_ARCH
 	select LOCKUP_DETECTOR
 	select HARDLOCKUP_DETECTOR_PERF if HAVE_HARDLOCKUP_DETECTOR_PERF
+	select HARDLOCKUP_DETECTOR_ARCH if HAVE_HARDLOCKUP_DETECTOR_ARCH
 	help
 	  Say Y here to enable the kernel to act as a watchdog to detect
 	  hard lockups.
@@ -1243,6 +1251,17 @@ config WW_MUTEX_SELFTEST
 	  Say M if you want these self tests to build as a module.
 	  Say N if you are unsure.
 
+config MTK_LOCKING_AEE
+	bool "AEE warning for locking"
+	depends on MTK_AEE_FEATURE && (LOCKDEP || DEBUG_SPINLOCK)
+	help
+	  This feature will trigger kernel API dump when lock warnings
+	  occur in runtime lock operations. For some specific cases,
+	  it will trigger kernel exception to catch full ram dump for
+	  analysis of memory corruption or bit-flip.
+
+	  Say N if you are unsure.
+
 endmenu # lock debugging
 
 config TRACE_IRQFLAGS
@@ -1279,7 +1298,8 @@ config WARN_ALL_UNSEEDED_RANDOM
 	  so architecture maintainers really need to do what they can
 	  to get the CRNG seeded sooner after the system is booted.
 	  However, since users cannot do anything actionable to
-	  address this, by default this option is disabled.
+	  address this, by default the kernel will issue only a single
+	  warning for the first use of unseeded randomness.
 
 	  Say Y here if you want to receive warnings for all uses of
 	  unseeded randomness.  This will be of use primarily for
@@ -1512,14 +1532,8 @@ config NETDEV_NOTIFIER_ERROR_INJECT
 	  If unsure, say N.
 
 config FUNCTION_ERROR_INJECTION
-	bool "Fault-injections of functions"
+	def_bool y
 	depends on HAVE_FUNCTION_ERROR_INJECTION && KPROBES
-	help
-	  Add fault injections into various functions that are annotated with
-	  ALLOW_ERROR_INJECTION() in the kernel. BPF may also modify the return
-	  value of theses functions. This is useful to test error paths of code.
-
-	  If unsure, say N
 
 config FAULT_INJECTION
 	bool "Fault-injection framework"
