@@ -23,19 +23,6 @@
 #include <asm/pgalloc.h>
 #include "internal.h"
 
-/* gross hack for <=4.19 stable */
-#if defined(CONFIG_S390) || defined(CONFIG_ARM)
-static void tlb_remove_table_smp_sync(void *arg)
-{
-        /* Simply deliver the interrupt */
-}
-
-static void tlb_remove_table_sync_one(void)
-{
-        smp_call_function(tlb_remove_table_smp_sync, NULL, 1);
-}
-#endif
-
 enum scan_result {
 	SCAN_FAIL,
 	SCAN_SUCCEED,
@@ -65,9 +52,6 @@ enum scan_result {
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/huge_memory.h>
-
-static struct task_struct *khugepaged_thread __read_mostly;
-static DEFINE_MUTEX(khugepaged_mutex);
 
 /* default scan 8*512 pte (or vmas) every 30 second */
 static unsigned int khugepaged_pages_to_scan __read_mostly;
@@ -629,17 +613,17 @@ static int __collapse_huge_page_isolate(struct vm_area_struct *vma,
 		    mmu_notifier_test_young(vma->vm_mm, address))
 			referenced++;
 	}
-
-	if (unlikely(!writable)) {
-		result = SCAN_PAGE_RO;
-	} else if (unlikely(!referenced)) {
-		result = SCAN_LACK_REFERENCED_PAGE;
+	if (likely(writable)) {
+		if (likely(referenced)) {
+			result = SCAN_SUCCEED;
+			trace_mm_collapse_huge_page_isolate(page, none_or_zero,
+							    referenced, writable, result);
+			return 1;
+		}
 	} else {
-		result = SCAN_SUCCEED;
-		trace_mm_collapse_huge_page_isolate(page, none_or_zero,
-						    referenced, writable, result);
-		return 1;
+		result = SCAN_PAGE_RO;
 	}
+
 out:
 	release_pte_pages(pte, _pte);
 	trace_mm_collapse_huge_page_isolate(page, none_or_zero,
@@ -836,18 +820,6 @@ static struct page *khugepaged_alloc_hugepage(bool *wait)
 
 static bool khugepaged_prealloc_page(struct page **hpage, bool *wait)
 {
-	/*
-	 * If the hpage allocated earlier was briefly exposed in page cache
-	 * before collapse_file() failed, it is possible that racing lookups
-	 * have not yet completed, and would then be unpleasantly surprised by
-	 * finding the hpage reused for the same mapping at a different offset.
-	 * Just release the previous allocation if there is any danger of that.
-	 */
-	if (*hpage && page_count(*hpage) > 1) {
-		put_page(*hpage);
-		*hpage = NULL;
-	}
-
 	if (!*hpage)
 		*hpage = khugepaged_alloc_hugepage(wait);
 
@@ -916,6 +888,8 @@ static bool __collapse_huge_page_swapin(struct mm_struct *mm,
 		.flags = FAULT_FLAG_ALLOW_RETRY,
 		.pmd = pmd,
 		.pgoff = linear_page_index(vma, address),
+		.vma_flags = vma->vm_flags,
+		.vma_page_prot = vma->vm_page_prot,
 	};
 
 	/* we only decide to swapin, if there is enough young ptes */
@@ -1040,6 +1014,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	if (mm_find_pmd(mm, address) != pmd)
 		goto out;
 
+	vm_write_begin(vma);
 	anon_vma_lock_write(vma->anon_vma);
 
 	pte = pte_offset_map(pmd, address);
@@ -1058,7 +1033,6 @@ static void collapse_huge_page(struct mm_struct *mm,
 	_pmd = pmdp_collapse_flush(vma, address, pmd);
 	spin_unlock(pmd_ptl);
 	mmu_notifier_invalidate_range_end(mm, mmun_start, mmun_end);
-	tlb_remove_table_sync_one();
 
 	spin_lock(pte_ptl);
 	isolated = __collapse_huge_page_isolate(vma, address, pte);
@@ -1076,6 +1050,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 		pmd_populate(mm, pmd, pmd_pgtable(_pmd));
 		spin_unlock(pmd_ptl);
 		anon_vma_unlock_write(vma->anon_vma);
+		vm_write_end(vma);
 		result = SCAN_FAIL;
 		goto out;
 	}
@@ -1110,6 +1085,7 @@ static void collapse_huge_page(struct mm_struct *mm,
 	set_pmd_at(mm, address, pmd, _pmd);
 	update_mmu_cache_pmd(vma, address, pmd);
 	spin_unlock(pmd_ptl);
+	vm_write_end(vma);
 
 	*hpage = NULL;
 
@@ -1303,20 +1279,12 @@ static void retract_page_tables(struct address_space *mapping, pgoff_t pgoff)
 		 */
 		if (down_write_trylock(&mm->mmap_sem)) {
 			if (!khugepaged_test_exit(mm)) {
-				spinlock_t *ptl;
-				unsigned long end = addr + HPAGE_PMD_SIZE;
-
-				mmu_notifier_invalidate_range_start(mm, addr,
-								    end);
-				ptl = pmd_lock(mm, pmd);
+				spinlock_t *ptl = pmd_lock(mm, pmd);
 				/* assume page table is clear */
 				_pmd = pmdp_collapse_flush(vma, addr, pmd);
 				spin_unlock(ptl);
 				mm_dec_nr_ptes(mm);
-				tlb_remove_table_sync_one();
 				pte_free(mm, pmd_pgtable(_pmd));
-				mmu_notifier_invalidate_range_end(mm, addr,
-								  end);
 			}
 			up_write(&mm->mmap_sem);
 		}
@@ -1977,6 +1945,8 @@ static void set_recommended_min_free_kbytes(void)
 
 int start_stop_khugepaged(void)
 {
+	static struct task_struct *khugepaged_thread __read_mostly;
+	static DEFINE_MUTEX(khugepaged_mutex);
 	int err = 0;
 
 	mutex_lock(&khugepaged_mutex);
@@ -2002,12 +1972,4 @@ int start_stop_khugepaged(void)
 fail:
 	mutex_unlock(&khugepaged_mutex);
 	return err;
-}
-
-void khugepaged_min_free_kbytes_update(void)
-{
-	mutex_lock(&khugepaged_mutex);
-	if (khugepaged_enabled() && khugepaged_thread)
-		set_recommended_min_free_kbytes();
-	mutex_unlock(&khugepaged_mutex);
 }
