@@ -694,8 +694,12 @@ static void __init map_kernel(pgd_t *pgdp)
  */
 void __init paging_init(void)
 {
-	phys_addr_t pgd_phys = early_pgtable_alloc();
-	pgd_t *pgdp = pgd_set_fixmap(pgd_phys);
+	phys_addr_t pgd_phys;
+	pgd_t *pgdp;
+
+	set_memsize_kernel_type(MEMSIZE_KERNEL_PAGING);
+	pgd_phys = early_pgtable_alloc();
+	pgdp = pgd_set_fixmap(pgd_phys);
 
 	map_kernel(pgdp);
 	map_mem(pgdp);
@@ -722,6 +726,7 @@ void __init paging_init(void)
 	memblock_free(__pa_symbol(swapper_pg_dir) + PAGE_SIZE,
 		      __pa_symbol(swapper_pg_end) - __pa_symbol(swapper_pg_dir)
 		      - PAGE_SIZE);
+	set_memsize_kernel_type(MEMSIZE_KERNEL_OTHERS);
 }
 
 /*
@@ -970,6 +975,11 @@ void *__init fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 			       round_up(offset + *size, SWAPPER_BLOCK_SIZE), prot);
 
 	return dt_virt;
+}
+
+int __init arch_ioremap_p4d_supported(void)
+{
+	return 0;
 }
 
 int __init arch_ioremap_pud_supported(void)
