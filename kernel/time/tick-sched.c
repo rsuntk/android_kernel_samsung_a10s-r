@@ -26,7 +26,6 @@
 #include <linux/module.h>
 #include <linux/irq_work.h>
 #include <linux/posix-timers.h>
-#include <linux/timer.h>
 #include <linux/context_tracking.h>
 #include <linux/mm.h>
 
@@ -200,11 +199,6 @@ static bool check_tick_dependency(atomic_t *dep)
 		return true;
 	}
 
-	if (val & TICK_DEP_MASK_RCU) {
-		trace_tick_stop(0, TICK_DEP_MASK_RCU);
-		return true;
-	}
-
 	return false;
 }
 
@@ -331,7 +325,6 @@ void tick_nohz_dep_set_cpu(int cpu, enum tick_dep_bits bit)
 		preempt_enable();
 	}
 }
-EXPORT_SYMBOL_GPL(tick_nohz_dep_set_cpu);
 
 void tick_nohz_dep_clear_cpu(int cpu, enum tick_dep_bits bit)
 {
@@ -339,7 +332,6 @@ void tick_nohz_dep_clear_cpu(int cpu, enum tick_dep_bits bit)
 
 	atomic_andnot(BIT(bit), &ts->tick_dep_mask);
 }
-EXPORT_SYMBOL_GPL(tick_nohz_dep_clear_cpu);
 
 /*
  * Set a per-task tick dependency. Posix CPU timers need this in order to elapse
@@ -407,7 +399,7 @@ void __init tick_nohz_full_setup(cpumask_var_t cpumask)
 	tick_nohz_full_running = true;
 }
 
-bool tick_nohz_cpu_hotpluggable(unsigned int cpu)
+static int tick_nohz_cpu_down(unsigned int cpu)
 {
 	/*
 	 * The boot CPU handles housekeeping duty (unbound timers,
@@ -415,13 +407,8 @@ bool tick_nohz_cpu_hotpluggable(unsigned int cpu)
 	 * CPUs. It must remain online when nohz full is enabled.
 	 */
 	if (tick_nohz_full_running && tick_do_timer_cpu == cpu)
-		return false;
-	return true;
-}
-
-static int tick_nohz_cpu_down(unsigned int cpu)
-{
-	return tick_nohz_cpu_hotpluggable(cpu) ? 0 : -EBUSY;
+		return -EBUSY;
+	return 0;
 }
 
 void __init tick_nohz_init(void)
@@ -1271,18 +1258,6 @@ void tick_irq_enter(void)
  * High resolution timer specific code
  */
 #ifdef CONFIG_HIGH_RES_TIMERS
-
-static void (*wake_callback)(void);
-
-void register_tick_sched_wakeup_callback(void (*cb)(void))
-{
-	if (!wake_callback)
-		wake_callback = cb;
-	else
-		pr_warn("tick-sched wake cb already exists; skipping.\n");
-}
-EXPORT_SYMBOL_GPL(register_tick_sched_wakeup_callback);
-
 /*
  * We rearm the timer until we get disabled by the idle code.
  * Called with interrupts disabled.
@@ -1300,15 +1275,8 @@ static enum hrtimer_restart tick_sched_timer(struct hrtimer *timer)
 	 * Do not call, when we are not in irq context and have
 	 * no valid regs pointer
 	 */
-	if (regs) {
+	if (regs)
 		tick_sched_handle(ts, regs);
-		if (wake_callback && tick_do_timer_cpu == smp_processor_id()) {
-			/*
-			 * wakeup user if needed
-			 */
-			wake_callback();
-		}
-	}
 	else
 		ts->next_tick = 0;
 
@@ -1366,23 +1334,13 @@ void tick_setup_sched_timer(void)
 void tick_cancel_sched_timer(int cpu)
 {
 	struct tick_sched *ts = &per_cpu(tick_cpu_sched, cpu);
-	ktime_t idle_sleeptime, iowait_sleeptime;
-	unsigned long idle_calls, idle_sleeps;
 
 # ifdef CONFIG_HIGH_RES_TIMERS
 	if (ts->sched_timer.base)
 		hrtimer_cancel(&ts->sched_timer);
 # endif
 
-	idle_sleeptime = ts->idle_sleeptime;
-	iowait_sleeptime = ts->iowait_sleeptime;
-	idle_calls = ts->idle_calls;
-	idle_sleeps = ts->idle_sleeps;
 	memset(ts, 0, sizeof(*ts));
-	ts->idle_sleeptime = idle_sleeptime;
-	ts->iowait_sleeptime = iowait_sleeptime;
-	ts->idle_calls = idle_calls;
-	ts->idle_sleeps = idle_sleeps;
 }
 #endif
 
