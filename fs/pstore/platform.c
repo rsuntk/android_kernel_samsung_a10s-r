@@ -44,6 +44,9 @@
 #include <linux/uaccess.h>
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
+#ifdef CONFIG_SEC_LOG_HOOK_PMSG
+#include <linux/sec_debug.h>
+#endif
 
 #include "internal.h"
 
@@ -250,7 +253,7 @@ static int pstore_compress(const void *in, void *out,
 {
 	int ret;
 
-	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESS))
+	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESSION))
 		return -EINVAL;
 
 	ret = crypto_comp_compress(tfm, in, inlen, out, &outlen);
@@ -527,6 +530,10 @@ static int pstore_write_user_compat(struct pstore_record *record,
 		goto out;
 	}
 
+#ifdef CONFIG_SEC_LOG_HOOK_PMSG		
+	sec_log_hook_pmsg((char *)buf, record->size);
+#endif
+
 	ret = record->psi->write(record);
 
 	kfree(record->buf);
@@ -650,7 +657,7 @@ static void decompress_record(struct pstore_record *record)
 	int unzipped_len;
 	char *decompressed;
 
-	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESS) || !record->compressed)
+	if (!IS_ENABLED(CONFIG_PSTORE_COMPRESSION) || !record->compressed)
 		return;
 
 	/* Only PSTORE_TYPE_DMESG support compression. */
