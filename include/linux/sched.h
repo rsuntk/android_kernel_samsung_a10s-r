@@ -689,6 +689,9 @@ struct task_struct {
 	int				wake_cpu;
 #endif
 	int				on_rq;
+#ifdef CONFIG_MTK_SCHED_CPU_PREFER
+	int				cpu_prefer;
+#endif
 
 	int				prio;
 	int				static_prio;
@@ -1292,27 +1295,13 @@ struct task_struct {
 	/* Used by LSM modules for access restriction: */
 	void				*security;
 #endif
-	/* task is frozen/stopped (used by the cgroup freezer) */
-	ANDROID_KABI_USE(1, unsigned frozen:1);
 
-	/* 095444fad7e3 ("futex: Replace PF_EXITPIDONE with a state") */
-	ANDROID_KABI_USE(2, unsigned int futex_state);
-
-	/*
-	 * f9b0c6c556db ("futex: Add mutex around futex exit")
-	 * A struct mutex takes 32 bytes, or 4 64bit entries, so pick off
-	 * 4 of the reserved members, and replace them with a struct mutex.
-	 * Do the GENKSYMS hack to work around the CRC issues
-	 */
-#ifdef __GENKSYMS__
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
 	ANDROID_KABI_RESERVE(6);
-#else
-	struct mutex			futex_exit_mutex;
-#endif
-
 	ANDROID_KABI_RESERVE(7);
 	ANDROID_KABI_RESERVE(8);
 
@@ -1492,6 +1481,7 @@ extern struct pid *cad_pid;
  */
 #define PF_IDLE			0x00000002	/* I am an IDLE thread */
 #define PF_EXITING		0x00000004	/* Getting shut down */
+#define PF_EXITPIDONE		0x00000008	/* PI exit done on shut down */
 #define PF_VCPU			0x00000010	/* I'm a virtual CPU */
 #define PF_WQ_WORKER		0x00000020	/* I'm a workqueue worker */
 #define PF_FORKNOEXEC		0x00000040	/* Forked but didn't exec */
@@ -1502,6 +1492,7 @@ extern struct pid *cad_pid;
 #define PF_MEMALLOC		0x00000800	/* Allocating memory */
 #define PF_NPROC_EXCEEDED	0x00001000	/* set_user() noticed that RLIMIT_NPROC was exceeded */
 #define PF_USED_MATH		0x00002000	/* If unset the fpu must be initialized before use */
+#define PF_USED_ASYNC		0x00004000	/* Used async_schedule*(), used by module init */
 #define PF_NOFREEZE		0x00008000	/* This thread should not be frozen */
 #define PF_FROZEN		0x00010000	/* Frozen for system suspend */
 #define PF_KSWAPD		0x00020000	/* I am kswapd */
@@ -1514,6 +1505,7 @@ extern struct pid *cad_pid;
 #define PF_MEMSTALL		0x01000000	/* Stalled due to lack of memory */
 #define PF_NO_SETAFFINITY	0x04000000	/* Userland is not allowed to meddle with cpus_allowed */
 #define PF_MCE_EARLY		0x08000000      /* Early kill for mce process policy */
+#define PF_MEMALLOC_NOCMA	0x10000000	/* All allocation request will have _GFP_MOVABLE cleared */
 #define PF_MUTEX_TESTER		0x20000000	/* Thread belongs to the rt mutex tester */
 #define PF_FREEZER_SKIP		0x40000000	/* Freezer should not count it as freezable */
 #define PF_SUSPEND_TASK		0x80000000      /* This thread called freeze_processes() and should not be frozen */
@@ -1546,7 +1538,7 @@ extern struct pid *cad_pid;
 #define tsk_used_math(p)			((p)->flags & PF_USED_MATH)
 #define used_math()				tsk_used_math(current)
 
-static __always_inline bool is_percpu_thread(void)
+static inline bool is_percpu_thread(void)
 {
 #ifdef CONFIG_SMP
 	return (current->flags & PF_NO_SETAFFINITY) &&

@@ -225,7 +225,10 @@ extern struct page *__page_cache_alloc(gfp_t gfp);
 #else
 static inline struct page *__page_cache_alloc(gfp_t gfp)
 {
-	return alloc_pages(gfp, 0);
+	if ((gfp & GFP_HIGHUSER_MOVABLE) == GFP_HIGHUSER_MOVABLE)
+		return alloc_pages(gfp | __GFP_CMA, 0);
+	else
+		return alloc_pages(gfp, 0);
 }
 #endif
 
@@ -403,7 +406,7 @@ static inline struct page *read_mapping_page(struct address_space *mapping,
 }
 
 /*
- * Get index of the page within radix-tree (but not for hugetlb pages).
+ * Get index of the page with in radix-tree
  * (TODO: remove once hugetlb pages will have ->index in PAGE_SIZE)
  */
 static inline pgoff_t page_to_index(struct page *page)
@@ -422,16 +425,15 @@ static inline pgoff_t page_to_index(struct page *page)
 	return pgoff;
 }
 
-extern pgoff_t hugetlb_basepage_index(struct page *page);
-
 /*
- * Get the offset in PAGE_SIZE (even for hugetlb pages).
- * (TODO: hugetlb pages should have ->index in PAGE_SIZE)
+ * Get the offset in PAGE_SIZE.
+ * (TODO: hugepage should have ->index in PAGE_SIZE)
  */
 static inline pgoff_t page_to_pgoff(struct page *page)
 {
-	if (unlikely(PageHuge(page)))
-		return hugetlb_basepage_index(page);
+	if (unlikely(PageHeadHuge(page)))
+		return page->index << compound_order(page);
+
 	return page_to_index(page);
 }
 
@@ -457,8 +459,8 @@ static inline pgoff_t linear_page_index(struct vm_area_struct *vma,
 	pgoff_t pgoff;
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		return linear_hugepage_index(vma, address);
-	pgoff = (address - vma->vm_start) >> PAGE_SHIFT;
-	pgoff += vma->vm_pgoff;
+	pgoff = (address - READ_ONCE(vma->vm_start)) >> PAGE_SHIFT;
+	pgoff += READ_ONCE(vma->vm_pgoff);
 	return pgoff;
 }
 
