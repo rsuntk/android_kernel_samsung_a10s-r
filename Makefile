@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 4
 PATCHLEVEL = 19
-SUBLEVEL = 319
+SUBLEVEL = 150
 EXTRAVERSION =
 NAME = "People's Front"
 
@@ -97,8 +97,8 @@ silence:=$(findstring s,$(filter-out --%,$(MAKEFLAGS)))
 endif
 
 ifeq ($(silence),s)
-quiet=silent_
-tools_silent=s
+  quiet=silent_
+  tools_silent=s
 endif
 
 export quiet Q KBUILD_VERBOSE
@@ -326,7 +326,8 @@ include scripts/subarch.include
 # Alternatively CROSS_COMPILE can be set in the environment.
 # Default value for CROSS_COMPILE is not to prefix executables
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
-ARCH		?= $(SUBARCH)
+CROSS_COMPILE	?= aarch64-linux-android-
+ARCH            ?= arm64
 
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
@@ -380,7 +381,6 @@ KBUILD_HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS) $(HOSTLDFLAGS)
 KBUILD_HOSTLDLIBS   := $(HOST_LFS_LIBS) $(HOSTLDLIBS)
 
 # Make variables (CC, etc...)
-CPP		= $(CC) -E
 ifneq ($(LLVM),)
 CC		= clang
 LD		= ld.lld
@@ -402,12 +402,13 @@ READELF		= $(CROSS_COMPILE)readelf
 OBJSIZE		= $(CROSS_COMPILE)size
 STRIP		= $(CROSS_COMPILE)strip
 endif
+CPP		= $(CC) -E
 LEX		= flex
 YACC		= bison
 AWK		= awk
 GENKSYMS	= scripts/genksyms/genksyms
 INSTALLKERNEL  := installkernel
-DEPMOD		= depmod
+DEPMOD		= /sbin/depmod
 PERL		= perl
 PYTHON		= python
 PYTHON2		= python2
@@ -438,6 +439,7 @@ LINUXINCLUDE    := \
 		-I$(srctree)/arch/$(SRCARCH)/include \
 		-I$(objtree)/arch/$(SRCARCH)/include/generated \
 		$(if $(KBUILD_SRC), -I$(srctree)/include) \
+		-I$(srctree)/drivers/misc/mediatek/include \
 		-I$(objtree)/include \
 		$(USERINCLUDE)
 
@@ -445,7 +447,7 @@ KBUILD_AFLAGS   := -D__ASSEMBLY__
 KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common -fshort-wchar \
 		   -Werror-implicit-function-declaration \
-		   -Werror=return-type -Wno-format-security \
+		   -Wno-format-security \
 		   -std=gnu89
 KBUILD_CPPFLAGS := -D__KERNEL__
 KBUILD_AFLAGS_KERNEL :=
@@ -469,6 +471,10 @@ export KBUILD_AFLAGS AFLAGS_KERNEL AFLAGS_MODULE
 export KBUILD_AFLAGS_MODULE KBUILD_CFLAGS_MODULE KBUILD_LDFLAGS_MODULE
 export KBUILD_AFLAGS_KERNEL KBUILD_CFLAGS_KERNEL
 export KBUILD_ARFLAGS
+
+# Show clang version
+CLANG_VERNUM := $(shell $(srctree)/scripts/clang-version.sh $(CC))
+$(info CLANG_VERSION is $(CLANG_VERNUM))
 
 # When compiling out-of-tree modules, put MODVERDIR in the module
 # tree rather than in the kernel tree. The kernel tree might
@@ -508,9 +514,13 @@ endif
 
 ifeq ($(cc-name),clang)
 ifneq ($(CROSS_COMPILE),)
-CLANG_FLAGS	+= --target=$(notdir $(CROSS_COMPILE:%-=%))
+CLANG_TRIPLE	?= aarch64-linux-gnu-
+CLANG_FLAGS	+= --target=$(notdir $(CLANG_TRIPLE:%-=%))
+ifeq ($(shell $(srctree)/scripts/clang-android.sh $(CC) $(CLANG_FLAGS)), y)
+$(error "Clang with Android --target detected. Did you specify CLANG_TRIPLE?")
+endif
 GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
-CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
+CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)
 GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
 endif
 ifneq ($(GCC_TOOLCHAIN),)
@@ -739,17 +749,14 @@ KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
 # See modpost pattern 2
 KBUILD_CFLAGS += $(call cc-option, -mno-global-merge,)
 KBUILD_CFLAGS += $(call cc-option, -fcatch-undefined-behavior)
-endif
+else
 
 # These warnings generated too much noise in a regular build.
 # Use make W=1 to enable them (see scripts/Makefile.extrawarn)
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
+endif
 
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
-
-# These result in bogus false positives
-KBUILD_CFLAGS += $(call cc-disable-warning, dangling-pointer)
-
 ifdef CONFIG_FRAME_POINTER
 KBUILD_CFLAGS	+= -fno-omit-frame-pointer -fno-optimize-sibling-calls
 else
@@ -763,18 +770,9 @@ KBUILD_CFLAGS	+= -fomit-frame-pointer
 endif
 endif
 
-# Initialize all stack variables with a 0xAA pattern.
-ifdef CONFIG_INIT_STACK_ALL_PATTERN
-KBUILD_CFLAGS	+= -ftrivial-auto-var-init=pattern
-endif
-
-# Initialize all stack variables with a zero value.
-ifdef CONFIG_INIT_STACK_ALL_ZERO
-KBUILD_CFLAGS	+= -ftrivial-auto-var-init=zero
-ifdef CONFIG_CC_HAS_AUTO_VAR_INIT_ZERO_ENABLER
-# https://github.com/llvm/llvm-project/issues/44842
-KBUILD_CFLAGS	+= -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang
-endif
+# Initialize all stack variables with a pattern, if desired.
+ifdef CONFIG_INIT_STACK_ALL
+KBUILD_CFLAGS  += -ftrivial-auto-var-init=pattern
 endif
 
 KBUILD_CFLAGS   += $(call cc-option, -fno-var-tracking-assignments)
@@ -785,13 +783,8 @@ KBUILD_CFLAGS   += $(call cc-option, -gsplit-dwarf, -g)
 else
 KBUILD_CFLAGS	+= -g
 endif
-ifeq ($(LLVM_IAS),1)
-KBUILD_AFLAGS	+= -g
-else
 KBUILD_AFLAGS	+= -Wa,-gdwarf-2
 endif
-endif
-
 ifdef CONFIG_DEBUG_INFO_DWARF4
 KBUILD_CFLAGS	+= $(call cc-option, -gdwarf-4,)
 endif
@@ -949,9 +942,6 @@ KBUILD_CFLAGS   += $(call cc-option,-fconserve-stack)
 # disallow errors like 'EXPORT_GPL(foo);' with missing header
 KBUILD_CFLAGS   += $(call cc-option,-Werror=implicit-int)
 
-# require functions to have arguments in prototypes, not empty 'int foo()'
-KBUILD_CFLAGS   += $(call cc-option,-Werror=strict-prototypes)
-
 # Prohibit date/time macros, which would make the build non-deterministic
 KBUILD_CFLAGS   += $(call cc-option,-Werror=date-time)
 
@@ -964,6 +954,12 @@ KBUILD_CFLAGS   += $(call cc-option,-Werror=designated-init)
 # change __FILE__ to the relative path from the srctree
 KBUILD_CFLAGS	+= $(call cc-option,-fmacro-prefix-map=$(srctree)/=)
 
+# ensure -fcf-protection is disabled when using retpoline as it is
+# incompatible with -mindirect-branch=thunk-extern
+ifdef CONFIG_RETPOLINE
+KBUILD_CFLAGS += $(call cc-option,-fcf-protection=none)
+endif
+
 # use the deterministic mode of AR if available
 KBUILD_ARFLAGS := $(call ar-option,D)
 
@@ -975,15 +971,12 @@ include scripts/Makefile.ubsan
 # last assignments
 KBUILD_CPPFLAGS += $(ARCH_CPPFLAGS) $(KCPPFLAGS)
 KBUILD_AFLAGS   += $(ARCH_AFLAGS)   $(KAFLAGS)
-KBUILD_CFLAGS   += $(ARCH_CFLAGS)   $(KCFLAGS)
+KBUILD_CFLAGS   += $(ARCH_CFLAGS)   $(KCFLAGS) -Werror
 
 # Use --build-id when available.
 LDFLAGS_BUILD_ID := $(call ld-option, --build-id)
 KBUILD_LDFLAGS_MODULE += $(LDFLAGS_BUILD_ID)
 LDFLAGS_vmlinux += $(LDFLAGS_BUILD_ID)
-
-KBUILD_LDFLAGS	+= -z noexecstack
-KBUILD_LDFLAGS	+= $(call ld-option,--no-warn-rwx-segments)
 
 ifeq ($(CONFIG_STRIP_ASM_SYMS),y)
 LDFLAGS_vmlinux	+= $(call ld-option, -X,)
@@ -1085,7 +1078,7 @@ HOST_LIBELF_LIBS = $(shell pkg-config libelf --libs 2>/dev/null || echo -lelf)
 
 ifdef CONFIG_STACK_VALIDATION
   has_libelf := $(call try-run,\
-		echo "int main() {}" | $(HOSTCC) $(KBUILD_HOSTLDFLAGS) -xc -o /dev/null $(HOST_LIBELF_LIBS) -,1,0)
+		echo "int main() {}" | $(HOSTCC) -xc -o /dev/null $(HOST_LIBELF_LIBS) -,1,0)
   ifeq ($(has_libelf),1)
     objtool_target := tools/objtool FORCE
   else
@@ -1130,7 +1123,7 @@ PHONY += autoksyms_recursive
 autoksyms_recursive: $(vmlinux-deps)
 ifdef CONFIG_TRIM_UNUSED_KSYMS
 	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/adjust_autoksyms.sh \
-	  "$(MAKE) -f $(srctree)/Makefile autoksyms_recursive"
+	  "$(MAKE) -f $(srctree)/Makefile vmlinux"
 endif
 
 # For the kernel to actually contain only the needed exported symbols,
@@ -1186,8 +1179,7 @@ $(vmlinux-dirs): prepare scripts
 	$(Q)$(MAKE) $(build)=$@ need-builtin=1
 
 define filechk_kernel.release
-	echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion \
-		$(srctree) $(BRANCH) $(KMI_GENERATION))"
+	echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))"
 endef
 
 # Store (new) KERNELRELEASE string in include/config/kernel.release
@@ -1265,22 +1257,17 @@ endif
 # needs to be updated, so this check is forced on all builds
 
 uts_len := 64
-ifneq (,$(BUILD_NUMBER))
-	UTS_RELEASE=$(KERNELRELEASE)-ab$(BUILD_NUMBER)
-else
-	UTS_RELEASE=$(KERNELRELEASE)
-endif
 define filechk_utsrelease.h
-	if [ `echo -n "$(UTS_RELEASE)" | wc -c ` -gt $(uts_len) ]; then \
-		echo '"$(UTS_RELEASE)" exceeds $(uts_len) characters' >&2;    \
-		exit 1;                                                       \
-	fi;                                                             \
-	(echo \#define UTS_RELEASE \"$(UTS_RELEASE)\";)
+	if [ `echo -n "$(KERNELRELEASE)" | wc -c ` -gt $(uts_len) ]; then \
+	  echo '"$(KERNELRELEASE)" exceeds $(uts_len) characters' >&2;    \
+	  exit 1;                                                         \
+	fi;                                                               \
+	(echo \#define UTS_RELEASE \"$(KERNELRELEASE)\";)
 endef
 
 define filechk_version.h
 	(echo \#define LINUX_VERSION_CODE $(shell                         \
-	expr $(VERSION) \* 65536 + 0$(PATCHLEVEL) \* 256 + 255); \
+	expr $(VERSION) \* 65536 + 0$(PATCHLEVEL) \* 256 + 0$(SUBLEVEL)); \
 	echo '#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))';)
 endef
 
@@ -1779,8 +1766,7 @@ checkstack:
 	$(PERL) $(src)/scripts/checkstack.pl $(CHECKSTACK_ARCH)
 
 kernelrelease:
-	@echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion \
-		$(srctree) $(BRANCH) $(KMI_GENERATION))"
+	@echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))"
 
 kernelversion:
 	@echo $(KERNELVERSION)
