@@ -722,9 +722,31 @@ int set_foreign_p2m_mapping(struct gnttab_map_grant_ref *map_ops,
 
 		WARN(pfn_to_mfn(pfn) != INVALID_P2M_ENTRY, "page must be ballooned");
 
-		if (unlikely(!set_phys_to_machine(pfn, FOREIGN_FRAME(mfn)))) {
-			ret = -ENOMEM;
-			goto out;
+		if (likely(set_phys_to_machine(pfn, FOREIGN_FRAME(mfn))))
+			continue;
+
+		/*
+		 * Signal an error for this slot. This in turn requires
+		 * immediate unmapping.
+		 */
+		map_ops[i].status = GNTST_general_error;
+		unmap[0].host_addr = map_ops[i].host_addr;
+		unmap[0].handle = map_ops[i].handle;
+		map_ops[i].handle = ~0;
+		if (map_ops[i].flags & GNTMAP_device_map)
+			unmap[0].dev_bus_addr = map_ops[i].dev_bus_addr;
+		else
+			unmap[0].dev_bus_addr = 0;
+
+		if (kmap_ops) {
+			kmap_ops[i].status = GNTST_general_error;
+			unmap[1].host_addr = kmap_ops[i].host_addr;
+			unmap[1].handle = kmap_ops[i].handle;
+			kmap_ops[i].handle = ~0;
+			if (kmap_ops[i].flags & GNTMAP_device_map)
+				unmap[1].dev_bus_addr = kmap_ops[i].dev_bus_addr;
+			else
+				unmap[1].dev_bus_addr = 0;
 		}
 	}
 

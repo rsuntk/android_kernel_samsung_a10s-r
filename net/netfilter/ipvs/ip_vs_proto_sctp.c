@@ -8,7 +8,6 @@
 #include <linux/netfilter_ipv4.h>
 #include <net/sctp/checksum.h>
 #include <net/ip_vs.h>
-
 static int
 sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
 		   struct ip_vs_proto_data *pd,
@@ -19,7 +18,6 @@ sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
 	struct sctp_chunkhdr _schunkh, *sch;
 	struct sctphdr *sh, _sctph;
 	__be16 _ports[2], *ports = NULL;
-
 	if (likely(!ip_vs_iph_icmp(iph))) {
 		sh = skb_header_pointer(skb, iph->len, sizeof(_sctph), &_sctph);
 		if (sh) {
@@ -37,12 +35,10 @@ sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
 		ports = skb_header_pointer(
 			skb, iph->len, sizeof(_ports), &_ports);
 	}
-
 	if (!ports) {
 		*verdict = NF_DROP;
 		return 0;
 	}
-
 	if (likely(!ip_vs_iph_inverse(iph)))
 		svc = ip_vs_service_find(ipvs, af, skb->mark, iph->protocol,
 					 &iph->daddr, ports[1]);
@@ -51,7 +47,6 @@ sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
 					 &iph->saddr, ports[0]);
 	if (svc) {
 		int ignored;
-
 		if (ip_vs_todrop(ipvs)) {
 			/*
 			 * It seems that we are very loaded.
@@ -76,14 +71,12 @@ sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
 	/* NF_ACCEPT */
 	return 1;
 }
-
 static void sctp_nat_csum(struct sk_buff *skb, struct sctphdr *sctph,
 			  unsigned int sctphoff)
 {
 	sctph->checksum = sctp_compute_cksum(skb, sctphoff);
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 }
-
 static int
 sctp_snat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 		  struct ip_vs_conn *cp, struct ip_vs_iphdr *iph)
@@ -91,23 +84,18 @@ sctp_snat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 	struct sctphdr *sctph;
 	unsigned int sctphoff = iph->len;
 	bool payload_csum = false;
-
 #ifdef CONFIG_IP_VS_IPV6
 	if (cp->af == AF_INET6 && iph->fragoffs)
 		return 1;
 #endif
-
 	/* csum_check requires unshared skb */
 	if (!skb_make_writable(skb, sctphoff + sizeof(*sctph)))
 		return 0;
-
 	if (unlikely(cp->app != NULL)) {
 		int ret;
-
 		/* Some checks before mangling */
 		if (pp->csum_check && !pp->csum_check(cp->af, skb, pp))
 			return 0;
-
 		/* Call application helper if needed */
 		ret = ip_vs_app_pkt_out(cp, skb, iph);
 		if (ret == 0)
@@ -116,21 +104,18 @@ sctp_snat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 		if (ret == 2)
 			payload_csum = true;
 	}
-
 	sctph = (void *) skb_network_header(skb) + sctphoff;
-
 	/* Only update csum if we really have to */
 	if (sctph->source != cp->vport || payload_csum ||
 	    skb->ip_summed == CHECKSUM_PARTIAL) {
 		sctph->source = cp->vport;
-		sctp_nat_csum(skb, sctph, sctphoff);
+		if (!skb_is_gso(skb))
+			sctp_nat_csum(skb, sctph, sctphoff);
 	} else {
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 	}
-
 	return 1;
 }
-
 static int
 sctp_dnat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 		  struct ip_vs_conn *cp, struct ip_vs_iphdr *iph)
@@ -138,23 +123,18 @@ sctp_dnat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 	struct sctphdr *sctph;
 	unsigned int sctphoff = iph->len;
 	bool payload_csum = false;
-
 #ifdef CONFIG_IP_VS_IPV6
 	if (cp->af == AF_INET6 && iph->fragoffs)
 		return 1;
 #endif
-
 	/* csum_check requires unshared skb */
 	if (!skb_make_writable(skb, sctphoff + sizeof(*sctph)))
 		return 0;
-
 	if (unlikely(cp->app != NULL)) {
 		int ret;
-
 		/* Some checks before mangling */
 		if (pp->csum_check && !pp->csum_check(cp->af, skb, pp))
 			return 0;
-
 		/* Call application helper if needed */
 		ret = ip_vs_app_pkt_in(cp, skb, iph);
 		if (ret == 0)
@@ -163,43 +143,36 @@ sctp_dnat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 		if (ret == 2)
 			payload_csum = true;
 	}
-
 	sctph = (void *) skb_network_header(skb) + sctphoff;
-
 	/* Only update csum if we really have to */
 	if (sctph->dest != cp->dport || payload_csum ||
 	    (skb->ip_summed == CHECKSUM_PARTIAL &&
 	     !(skb_dst(skb)->dev->features & NETIF_F_SCTP_CRC))) {
 		sctph->dest = cp->dport;
-		sctp_nat_csum(skb, sctph, sctphoff);
+		if (!skb_is_gso(skb))
+			sctp_nat_csum(skb, sctph, sctphoff);
 	} else if (skb->ip_summed != CHECKSUM_PARTIAL) {
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 	}
-
 	return 1;
 }
-
 static int
 sctp_csum_check(int af, struct sk_buff *skb, struct ip_vs_protocol *pp)
 {
 	unsigned int sctphoff;
 	struct sctphdr *sh, _sctph;
 	__le32 cmp, val;
-
 #ifdef CONFIG_IP_VS_IPV6
 	if (af == AF_INET6)
 		sctphoff = sizeof(struct ipv6hdr);
 	else
 #endif
 		sctphoff = ip_hdrlen(skb);
-
 	sh = skb_header_pointer(skb, sctphoff, sizeof(_sctph), &_sctph);
 	if (sh == NULL)
 		return 0;
-
 	cmp = sh->checksum;
 	val = sctp_compute_cksum(skb, sctphoff);
-
 	if (val != cmp) {
 		/* CRC failure, dump it. */
 		IP_VS_DBG_RL_PKT(0, af, pp, skb, 0,
@@ -208,7 +181,6 @@ sctp_csum_check(int af, struct sk_buff *skb, struct ip_vs_protocol *pp)
 	}
 	return 1;
 }
-
 enum ipvs_sctp_event_t {
 	IP_VS_SCTP_DATA = 0,		/* DATA, SACK, HEARTBEATs */
 	IP_VS_SCTP_INIT,
@@ -222,7 +194,6 @@ enum ipvs_sctp_event_t {
 	IP_VS_SCTP_ABORT,
 	IP_VS_SCTP_EVENT_LAST
 };
-
 /* RFC 2960, 3.2 Chunk Field Descriptions */
 static __u8 sctp_events[] = {
 	[SCTP_CID_DATA]			= IP_VS_SCTP_DATA,
@@ -241,7 +212,6 @@ static __u8 sctp_events[] = {
 	[SCTP_CID_ECN_CWR]		= IP_VS_SCTP_DATA,
 	[SCTP_CID_SHUTDOWN_COMPLETE]	= IP_VS_SCTP_SHUTDOWN_COMPLETE,
 };
-
 /* SCTP States:
  * See RFC 2960, 4. SCTP Association State Diagram
  *
@@ -266,7 +236,6 @@ static __u8 sctp_events[] = {
  * IP_VS_SCTP_S_COOKIE: C:INIT-ACK sent, wait for S:COOKIE-ECHO
  * IP_VS_SCTP_S_COOKIE_ECHOED: S:COOKIE-ECHO sent, wait for C:COOKIE-ACK
  */
-
 #define sNO IP_VS_SCTP_S_NONE
 #define sI1 IP_VS_SCTP_S_INIT1
 #define sIN IP_VS_SCTP_S_INIT
@@ -281,7 +250,6 @@ static __u8 sctp_events[] = {
 #define sSA IP_VS_SCTP_S_SHUTDOWN_ACK_SENT
 #define sRJ IP_VS_SCTP_S_REJECTED
 #define sCL IP_VS_SCTP_S_CLOSED
-
 static const __u8 sctp_states
 	[IP_VS_DIR_LAST][IP_VS_SCTP_EVENT_LAST][IP_VS_SCTP_S_LAST] = {
 	{ /* INPUT */
@@ -324,9 +292,7 @@ static const __u8 sctp_states
 /* ab  */{sCL, sCL, sCL, sCL, sCL, sRJ, sCL, sCL, sCL, sCL, sCL, sCL, sCL, sCL},
 	},
 };
-
 #define IP_VS_SCTP_MAX_RTO	((60 + 1) * HZ)
-
 /* Timeout table[state] */
 static const int sctp_timeouts[IP_VS_SCTP_S_LAST + 1] = {
 	[IP_VS_SCTP_S_NONE]			= 2 * HZ,
@@ -345,7 +311,6 @@ static const int sctp_timeouts[IP_VS_SCTP_S_LAST + 1] = {
 	[IP_VS_SCTP_S_CLOSED]			= IP_VS_SCTP_MAX_RTO,
 	[IP_VS_SCTP_S_LAST]			= 2 * HZ,
 };
-
 static const char *sctp_state_name_table[IP_VS_SCTP_S_LAST + 1] = {
 	[IP_VS_SCTP_S_NONE]			= "NONE",
 	[IP_VS_SCTP_S_INIT1]			= "INIT1",
@@ -363,8 +328,6 @@ static const char *sctp_state_name_table[IP_VS_SCTP_S_LAST + 1] = {
 	[IP_VS_SCTP_S_CLOSED]			= "CLOSED",
 	[IP_VS_SCTP_S_LAST]			= "BUG!",
 };
-
-
 static const char *sctp_state_name(int state)
 {
 	if (state >= IP_VS_SCTP_S_LAST)
@@ -373,7 +336,6 @@ static const char *sctp_state_name(int state)
 		return sctp_state_name_table[state];
 	return "?";
 }
-
 static inline void
 set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 		int direction, const struct sk_buff *skb)
@@ -382,18 +344,15 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 	unsigned char chunk_type;
 	int event, next_state;
 	int ihl, cofs;
-
 #ifdef CONFIG_IP_VS_IPV6
 	ihl = cp->af == AF_INET ? ip_hdrlen(skb) : sizeof(struct ipv6hdr);
 #else
 	ihl = ip_hdrlen(skb);
 #endif
-
 	cofs = ihl + sizeof(struct sctphdr);
 	sch = skb_header_pointer(skb, cofs, sizeof(_sctpch), &_sctpch);
 	if (sch == NULL)
 		return;
-
 	chunk_type = sch->type;
 	/*
 	 * Section 3: Multiple chunks can be bundled into one SCTP packet
@@ -409,7 +368,6 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 	if ((sch->type == SCTP_CID_COOKIE_ECHO) ||
 	    (sch->type == SCTP_CID_COOKIE_ACK)) {
 		int clen = ntohs(sch->length);
-
 		if (clen >= sizeof(_sctpch)) {
 			sch = skb_header_pointer(skb, cofs + ALIGN(clen, 4),
 						 sizeof(_sctpch), &_sctpch);
@@ -417,10 +375,8 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 				chunk_type = sch->type;
 		}
 	}
-
 	event = (chunk_type < sizeof(sctp_events)) ?
 		sctp_events[chunk_type] : IP_VS_SCTP_DATA;
-
 	/* Update direction to INPUT_ONLY if necessary
 	 * or delete NO_OUTPUT flag if output packet detected
 	 */
@@ -430,12 +386,9 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 		else
 			direction = IP_VS_DIR_INPUT_ONLY;
 	}
-
 	next_state = sctp_states[direction][event][cp->state];
-
 	if (next_state != cp->state) {
 		struct ip_vs_dest *dest = cp->dest;
-
 		IP_VS_DBG_BUF(8, "%s %s  %s:%d->"
 				"%s:%d state: %s->%s conn->refcnt:%d\n",
 				pd->pp->name,
@@ -469,7 +422,6 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 	else	/* What to do ? */
 		cp->timeout = sctp_timeouts[cp->state = next_state];
 }
-
 static void
 sctp_state_transition(struct ip_vs_conn *cp, int direction,
 		const struct sk_buff *skb, struct ip_vs_proto_data *pd)
@@ -478,13 +430,11 @@ sctp_state_transition(struct ip_vs_conn *cp, int direction,
 	set_sctp_state(pd, cp, direction, skb);
 	spin_unlock_bh(&cp->lock);
 }
-
 static inline __u16 sctp_app_hashkey(__be16 port)
 {
 	return (((__force u16)port >> SCTP_APP_TAB_BITS) ^ (__force u16)port)
 		& SCTP_APP_TAB_MASK;
 }
-
 static int sctp_register_app(struct netns_ipvs *ipvs, struct ip_vs_app *inc)
 {
 	struct ip_vs_app *i;
@@ -492,9 +442,7 @@ static int sctp_register_app(struct netns_ipvs *ipvs, struct ip_vs_app *inc)
 	__be16 port = inc->port;
 	int ret = 0;
 	struct ip_vs_proto_data *pd = ip_vs_proto_data_get(ipvs, IPPROTO_SCTP);
-
 	hash = sctp_app_hashkey(port);
-
 	list_for_each_entry(i, &ipvs->sctp_apps[hash], p_list) {
 		if (i->port == port) {
 			ret = -EEXIST;
@@ -504,36 +452,29 @@ static int sctp_register_app(struct netns_ipvs *ipvs, struct ip_vs_app *inc)
 	list_add_rcu(&inc->p_list, &ipvs->sctp_apps[hash]);
 	atomic_inc(&pd->appcnt);
 out:
-
 	return ret;
 }
-
 static void sctp_unregister_app(struct netns_ipvs *ipvs, struct ip_vs_app *inc)
 {
 	struct ip_vs_proto_data *pd = ip_vs_proto_data_get(ipvs, IPPROTO_SCTP);
-
 	atomic_dec(&pd->appcnt);
 	list_del_rcu(&inc->p_list);
 }
-
 static int sctp_app_conn_bind(struct ip_vs_conn *cp)
 {
 	struct netns_ipvs *ipvs = cp->ipvs;
 	int hash;
 	struct ip_vs_app *inc;
 	int result = 0;
-
 	/* Default binding: bind app only for NAT */
 	if (IP_VS_FWD_METHOD(cp) != IP_VS_CONN_F_MASQ)
 		return 0;
 	/* Lookup application incarnations and bind the right one */
 	hash = sctp_app_hashkey(cp->vport);
-
 	list_for_each_entry_rcu(inc, &ipvs->sctp_apps[hash], p_list) {
 		if (inc->port == cp->vport) {
 			if (unlikely(!ip_vs_app_inc_get(inc)))
 				break;
-
 			IP_VS_DBG_BUF(9, "%s: Binding conn %s:%u->"
 					"%s:%u to app %s on port %u\n",
 					__func__,
@@ -548,10 +489,8 @@ static int sctp_app_conn_bind(struct ip_vs_conn *cp)
 			break;
 		}
 	}
-
 	return result;
 }
-
 /* ---------------------------------------------
  *   timeouts is netns related now.
  * ---------------------------------------------
@@ -565,12 +504,10 @@ static int __ip_vs_sctp_init(struct netns_ipvs *ipvs, struct ip_vs_proto_data *p
 		return -ENOMEM;
 	return 0;
 }
-
 static void __ip_vs_sctp_exit(struct netns_ipvs *ipvs, struct ip_vs_proto_data *pd)
 {
 	kfree(pd->timeout_table);
 }
-
 struct ip_vs_protocol ip_vs_protocol_sctp = {
 	.name		= "SCTP",
 	.protocol	= IPPROTO_SCTP,
